@@ -1,0 +1,143 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// Uploaded collection JSON file metadata
+model Collection {
+  id              String           @id @default(cuid())
+  name            String
+  originalName    String           @map("original_name")
+  s3Key           String           @map("s3_key")
+  variableNames   String[]         @map("variable_names") // Extracted {{var}} names
+  requestCount    Int              @map("request_count")
+  createdAt       DateTime         @default(now()) @map("created_at")
+  updatedAt       DateTime         @updatedAt @map("updated_at")
+  
+  runs            Run[]
+  
+  @@map("collections")
+}
+
+// Uploaded CSV file metadata
+model CsvFile {
+  id              String           @id @default(cuid())
+  name            String
+  originalName    String           @map("original_name")
+  s3Key           String           @map("s3_key")
+  columnNames     String[]         @map("column_names")
+  rowCount        Int              @map("row_count")
+  createdAt       DateTime         @default(now()) @map("created_at")
+  updatedAt       DateTime         @updatedAt @map("updated_at")
+  
+  runs            Run[]
+  
+  @@map("csv_files")
+}
+
+// Environment variables that can be applied to runs
+model Environment {
+  id              String           @id @default(cuid())
+  name            String
+  variables       Json             // { key: value } pairs
+  createdAt       DateTime         @default(now()) @map("created_at")
+  updatedAt       DateTime         @updatedAt @map("updated_at")
+  
+  runs            Run[]
+  
+  @@map("environments")
+}
+
+// Run status enum
+enum RunStatus {
+  PENDING
+  RUNNING
+  COMPLETED
+  FAILED
+  CANCELLED
+}
+
+// A single execution run
+model Run {
+  id              String           @id @default(cuid())
+  collectionId    String           @map("collection_id")
+  csvFileId       String           @map("csv_file_id")
+  environmentId   String?          @map("environment_id")
+  variableMapping Json             @map("variable_mapping") // { csvColumn: collectionVar }
+  status          RunStatus        @default(PENDING)
+  totalIterations Int              @map("total_iterations")
+  completedIterations Int          @default(0) @map("completed_iterations")
+  passedRequests  Int              @default(0) @map("passed_requests")
+  failedRequests  Int              @default(0) @map("failed_requests")
+  startedAt       DateTime?        @map("started_at")
+  completedAt     DateTime?        @map("completed_at")
+  errorMessage    String?          @map("error_message")
+  createdAt       DateTime         @default(now()) @map("created_at")
+  updatedAt       DateTime         @updatedAt @map("updated_at")
+  
+  collection      Collection       @relation(fields: [collectionId], references: [id])
+  csvFile         CsvFile          @relation(fields: [csvFileId], references: [id])
+  environment     Environment?     @relation(fields: [environmentId], references: [id])
+  iterations      Iteration[]
+  
+  @@map("runs")
+}
+
+// Iteration status enum
+enum IterationStatus {
+  PENDING
+  RUNNING
+  COMPLETED
+  FAILED
+}
+
+// Each CSV row = one iteration
+model Iteration {
+  id              String           @id @default(cuid())
+  runId           String           @map("run_id")
+  rowIndex        Int              @map("row_index") // 0-based CSV row index
+  rowData         Json             @map("row_data") // The actual CSV row data
+  status          IterationStatus  @default(PENDING)
+  passedCount     Int              @default(0) @map("passed_count")
+  failedCount     Int              @default(0) @map("failed_count")
+  startedAt       DateTime?        @map("started_at")
+  completedAt     DateTime?        @map("completed_at")
+  createdAt       DateTime         @default(now()) @map("created_at")
+  updatedAt       DateTime         @updatedAt @map("updated_at")
+  
+  run             Run              @relation(fields: [runId], references: [id], onDelete: Cascade)
+  requests        RequestResult[]
+  
+  @@map("iterations")
+}
+
+// Result of a single request within an iteration
+model RequestResult {
+  id              String           @id @default(cuid())
+  iterationId     String           @map("iteration_id")
+  requestIndex    Int              @map("request_index") // Order in collection
+  requestName     String           @map("request_name")
+  method          String
+  url             String
+  requestHeaders  Json?            @map("request_headers")
+  requestBody     String?          @map("request_body")
+  responseStatus  Int?             @map("response_status")
+  responseHeaders Json?            @map("response_headers")
+  responseBody    String?          @map("response_body")
+  responseTimeMs  Int?             @map("response_time_ms")
+  passed          Boolean          @default(false)
+  errorMessage    String?          @map("error_message")
+  testResults     Json?            @map("test_results") // Array of test assertion results
+  createdAt       DateTime         @default(now()) @map("created_at")
+  
+  iteration       Iteration        @relation(fields: [iterationId], references: [id], onDelete: Cascade)
+  
+  @@map("request_results")
+}
