@@ -221,6 +221,7 @@ export interface Run {
   csvFile: { id: string; name: string; rowCount: number };
   environment?: { id: string; name: string };
   variableMapping: Record<string, string>;
+  delayMs: number;
   status: RunStatus;
   totalIterations: number;
   completedIterations: number;
@@ -249,6 +250,7 @@ export interface RunSummary {
   completedIterations: number;
   passedRequests: number;
   failedRequests: number;
+  delayMs: number;
   startedAt?: string;
   completedAt?: string;
   createdAt: string;
@@ -289,7 +291,17 @@ export interface CreateRunRequest {
   csvFileId: string;
   environmentId?: string;
   variableMapping: Record<string, string>;
+  /** Pause between consecutive requests, in milliseconds. */
+  delayMs?: number;
 }
+
+/**
+ * Delay ceiling shown in the UI. The server is authoritative and derives its
+ * own limit from EXEC_TIME_BUDGET_MS; this matches the default configuration.
+ * Lowering that budget lowers the server's limit, and it will reject anything
+ * above it with a clear message.
+ */
+export const MAX_DELAY_MS = 15_000;
 
 export interface Iteration {
   id: string;

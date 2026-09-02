@@ -75,6 +75,9 @@ model Run {
   csvFileId           String    @map("csv_file_id")
   environmentId       String?   @map("environment_id")
   variableMapping     Json      @map("variable_mapping") // { csvColumn: collectionVar }
+  // Pause between consecutive requests, in milliseconds. Applies across
+  // iteration boundaries too. 0 means send as fast as possible.
+  delayMs             Int       @default(0) @map("delay_ms")
   status              RunStatus @default(PENDING)
   totalIterations     Int       @map("total_iterations")
   completedIterations Int       @default(0) @map("completed_iterations")

@@ -15,6 +15,13 @@ const MAX_BUSY_RETRIES = 20;
 /** Give up after this many consecutive request failures. */
 const MAX_ERRORS = 3;
 
+/**
+ * Stop driving after this many consecutive chunks that recorded no request.
+ * The executor guarantees at least one request per chunk, so repeated no-op
+ * chunks mean something is wrong and looping would spin indefinitely.
+ */
+const MAX_IDLE_CHUNKS = 3;
+
 function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -58,6 +65,8 @@ export function useRunDriver(activeRunIds: string[], onProgress: () => void) {
       void (async () => {
         let busyRetries = 0;
         let errors = 0;
+        let idleChunks = 0;
+        let lastRequestCount = -1;
 
         try {
           while (mounted.current) {
@@ -91,6 +100,21 @@ export function useRunDriver(activeRunIds: string[], onProgress: () => void) {
             if (result.done) {
               break;
             }
+
+            // Bail out if chunks stop recording requests, rather than looping
+            const completed = result.passedRequests + result.failedRequests;
+            if (completed === lastRequestCount) {
+              idleChunks += 1;
+              if (idleChunks >= MAX_IDLE_CHUNKS) {
+                console.error(
+                  `Run ${runId} made no progress across ${MAX_IDLE_CHUNKS} chunks; stopping.`
+                );
+                break;
+              }
+            } else {
+              idleChunks = 0;
+            }
+            lastRequestCount = completed;
 
             await sleep(CHUNK_GAP_MS);
           }

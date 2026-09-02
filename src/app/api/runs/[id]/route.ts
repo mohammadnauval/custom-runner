@@ -27,6 +27,7 @@ export async function GET(_request: Request, { params }: Params) {
       csvFile: run.csvFile,
       environment: run.environment,
       variableMapping: run.variableMapping,
+      delayMs: run.delayMs,
       status: run.status,
       totalIterations: run.totalIterations,
       completedIterations: run.completedIterations,

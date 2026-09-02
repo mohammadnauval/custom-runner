@@ -151,7 +151,7 @@ Only `DATABASE_URL` is required. The rest tune the executor. See `.env.example`.
 | Variable | Default | Purpose |
 |---|---|---|
 | `DATABASE_URL` | — | Postgres connection string (pooled, in production) |
-| `EXEC_TIME_BUDGET_MS` | `30000` | Time one chunk spends issuing requests. Keep well under `maxDuration` |
+| `EXEC_TIME_BUDGET_MS` | `30000` | Time one chunk spends issuing requests. Keep well under `maxDuration`. Also sets the per-run delay ceiling, at half this value |
 | `EXEC_LEASE_MS` | `90000` | Lease duration. Must exceed `maxDuration` so a slow invocation isn't preempted |
 | `REQUEST_TIMEOUT_MS` | `20000` | Per-request timeout. Keep below `EXEC_TIME_BUDGET_MS` |
 | `MAX_STORED_BODY_BYTES` | `200000` | Response body truncation threshold |
@@ -172,6 +172,12 @@ Only `DATABASE_URL` is required. The rest tune the executor. See `.env.example`.
 ### 3. Start a run
 
 **New Run** tab, three steps: pick the collection and CSV, map CSV columns to collection variables (columns matching a variable name map automatically), then confirm.
+
+Step 2 also has **Delay between requests (ms)**, which pauses between every request — including across iteration boundaries — so you can stay under a rate limit. `0` sends as fast as possible. The confirm step estimates how much total waiting the delay adds.
+
+The ceiling is half of `EXEC_TIME_BUDGET_MS`, so 15s by default. A delay only takes effect if it fits inside a chunk's budget alongside the request itself; at a chunk boundary the wait is skipped, and an uncapped value would silently come out shorter than requested. The API rejects anything above the limit rather than accepting it and under-delivering.
+
+Be aware that on Vercel the delay is spent inside a running function, so it counts toward your execution time. A 1s delay across 500 requests is roughly 8 minutes of billable waiting.
 
 ### 4. Watch and export
 
@@ -237,7 +243,7 @@ userId,email,name
 | PUT | `/api/environments/:id` | Update |
 | DELETE | `/api/environments/:id` | Delete (409 if used by a run) |
 | GET | `/api/runs` | List runs (`?limit=&offset=`) |
-| POST | `/api/runs` | Create a run (status `PENDING`) |
+| POST | `/api/runs` | Create a run (status `PENDING`). Accepts optional `delayMs` |
 | **POST** | **`/api/runs/:id/execute`** | **Advance one chunk. Call until `done: true`** |
 | GET | `/api/runs/:id` | Run detail |
 | GET | `/api/runs/:id/iterations` | Iterations |

@@ -30,6 +30,20 @@ const CANCEL_POLL_MS = 2_000;
 
 const ITERATION_INSERT_BATCH = 500;
 
+/**
+ * Upper bound on the configurable inter-request delay.
+ *
+ * A delay is only honoured if it fits inside a chunk's time budget alongside
+ * the request itself; at a chunk boundary the wait is skipped. Capping at half
+ * the budget keeps every requested delay actually deliverable instead of
+ * silently coming out shorter.
+ */
+export const MAX_DELAY_MS = Math.max(0, Math.min(15_000, Math.floor(TIME_BUDGET_MS / 2)));
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 export type ChunkResult =
   | { status: 'busy'; done: false }
   | { status: 'not_runnable'; done: true; runStatus: RunStatus }
@@ -96,11 +110,26 @@ export async function executeChunk(runId: string): Promise<ChunkResult> {
 
     const envVariables = (run.environment?.variables as Record<string, string> | undefined) ?? {};
     const variableMapping = (run.variableMapping as Record<string, string>) ?? {};
+    const delayMs = Math.min(Math.max(run.delayMs ?? 0, 0), MAX_DELAY_MS);
 
     let lastCancelCheck = Date.now();
 
-    // Work through iterations until the run finishes or the budget expires
-    while (Date.now() < deadline) {
+    // The first request of a chunk never waits. A chunk boundary already
+    // introduces a pause, and skipping it here guarantees every chunk completes
+    // at least one request — otherwise a delay larger than the time budget
+    // would sleep, run out of budget, and loop forever making no progress.
+    let sentInThisChunk = false;
+
+    // Work through iterations until the run finishes or the budget expires.
+    // The budget is only allowed to end a chunk once that chunk has actually
+    // sent something. Otherwise slow per-chunk setup (several database round
+    // trips) could consume the whole budget before the first request, and
+    // every chunk would return "no work done" forever.
+    for (;;) {
+      if (sentInThisChunk && Date.now() >= deadline) {
+        break;
+      }
+
       if (await isCancelled(runId)) {
         leaseHeld = false;
         return await summarise(runId, 'CANCELLED');
@@ -141,9 +170,21 @@ export async function executeChunk(runId: string): Promise<ChunkResult> {
           continue;
         }
 
-        if (Date.now() >= deadline) {
+        // Same rule as the outer loop: never leave a chunk empty-handed.
+        if (sentInThisChunk && Date.now() >= deadline) {
           budgetExpired = true;
           break;
+        }
+
+        // Wait between consecutive requests, including across iterations.
+        // If the wait wouldn't leave room to actually send, end the chunk and
+        // let the next one resume — the boundary supplies the gap instead.
+        if (sentInThisChunk && delayMs > 0) {
+          if (Date.now() + delayMs >= deadline) {
+            budgetExpired = true;
+            break;
+          }
+          await sleep(delayMs);
         }
 
         if (Date.now() - lastCancelCheck >= CANCEL_POLL_MS) {
@@ -155,6 +196,7 @@ export async function executeChunk(runId: string): Promise<ChunkResult> {
         }
 
         await runAndRecord(iteration.id, j, requests[j], variables);
+        sentInThisChunk = true;
       }
 
       if (budgetExpired) {

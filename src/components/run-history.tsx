@@ -130,6 +130,7 @@ function RunCard({
           <p className="text-sm text-muted-foreground">
             {run.csvFileName} • {run.totalIterations} iterations
             {run.environmentName ? ` • ${run.environmentName}` : ''}
+            {run.delayMs > 0 ? ` • ${run.delayMs}ms delay` : ''}
           </p>
         </div>
         <StatusBadge status={run.status} />

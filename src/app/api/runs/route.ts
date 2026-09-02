@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { prisma } from '@/server/prisma';
+import { MAX_DELAY_MS } from '@/server/executor';
 import { badRequest, handle, notFound, ok } from '@/server/http';
 
 export const runtime = 'nodejs';
@@ -10,6 +11,9 @@ const createRunSchema = z.object({
   csvFileId: z.string().min(1),
   environmentId: z.string().optional(),
   variableMapping: z.record(z.string()), // { csvColumn: collectionVar }
+  // Pause between consecutive requests. Capped because the executor sleeps
+  // inside a time-limited function invocation.
+  delayMs: z.number().int().min(0).max(MAX_DELAY_MS).optional(),
 });
 
 export async function GET(request: Request) {
@@ -43,6 +47,7 @@ export async function GET(request: Request) {
         completedIterations: run.completedIterations,
         passedRequests: run.passedRequests,
         failedRequests: run.failedRequests,
+        delayMs: run.delayMs,
         startedAt: run.startedAt,
         completedAt: run.completedAt,
         createdAt: run.createdAt,
@@ -98,9 +103,10 @@ export async function POST(request: Request) {
         csvFileId: body.csvFileId,
         environmentId: body.environmentId,
         variableMapping: body.variableMapping,
+        delayMs: body.delayMs ?? 0,
         totalIterations: csvFile.rowCount,
       },
-      select: { id: true, status: true, totalIterations: true, createdAt: true },
+      select: { id: true, status: true, totalIterations: true, delayMs: true, createdAt: true },
     });
 
     // Execution is driven by repeated calls to POST /api/runs/:id/execute.

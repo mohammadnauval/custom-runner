@@ -5,10 +5,11 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { FileDropzone } from '@/components/file-dropzone';
 import { Alert } from '@/components/ui/alert';
-import { collectionsApi, csvApi, environmentsApi, runsApi, formatApiError } from '@/lib/api';
+import { collectionsApi, csvApi, environmentsApi, runsApi, formatApiError, MAX_DELAY_MS } from '@/lib/api';
 import { ChevronLeft, ChevronRight, Play, FileJson, FileSpreadsheet } from 'lucide-react';
 
 interface NewRunWizardProps {
@@ -24,6 +25,22 @@ type Step = 'select-files' | 'map-variables' | 'confirm';
  */
 const NONE_VALUE = '__none__';
 
+/** Render a millisecond total as a short human-readable duration. */
+function formatDuration(ms: number): string {
+  if (ms < 1000) return `${ms} ms`;
+
+  const totalSeconds = Math.round(ms / 1000);
+  if (totalSeconds < 60) return `${totalSeconds}s`;
+
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  if (minutes < 60) return seconds > 0 ? `${minutes}m ${seconds}s` : `${minutes}m`;
+
+  const hours = Math.floor(minutes / 60);
+  const remainingMinutes = minutes % 60;
+  return remainingMinutes > 0 ? `${hours}h ${remainingMinutes}m` : `${hours}h`;
+}
+
 export function NewRunWizard({ onRunStarted }: NewRunWizardProps) {
   const queryClient = useQueryClient();
   const [step, setStep] = useState<Step>('select-files');
@@ -31,6 +48,7 @@ export function NewRunWizard({ onRunStarted }: NewRunWizardProps) {
   const [selectedCsvId, setSelectedCsvId] = useState<string>('');
   const [selectedEnvId, setSelectedEnvId] = useState<string>('');
   const [variableMapping, setVariableMapping] = useState<Record<string, string>>({});
+  const [delayMs, setDelayMs] = useState(0);
   const [collectionError, setCollectionError] = useState<string | null>(null);
   const [csvError, setCsvError] = useState<string | null>(null);
   const [runError, setRunError] = useState<string | null>(null);
@@ -104,6 +122,7 @@ export function NewRunWizard({ onRunStarted }: NewRunWizardProps) {
       csvFileId: selectedCsvId,
       environmentId: selectedEnvId || undefined,
       variableMapping,
+      delayMs,
     });
   };
 
@@ -290,6 +309,34 @@ export function NewRunWizard({ onRunStarted }: NewRunWizardProps) {
               </Select>
             </div>
 
+            {/* Inter-request delay */}
+            <div className="space-y-2">
+              <Label htmlFor="delay-ms">Delay between requests (ms)</Label>
+              <Input
+                id="delay-ms"
+                type="number"
+                min={0}
+                max={MAX_DELAY_MS}
+                step={100}
+                value={delayMs}
+                onChange={(e) => {
+                  const parsed = Number(e.target.value);
+                  setDelayMs(
+                    Number.isFinite(parsed)
+                      ? Math.min(Math.max(Math.trunc(parsed), 0), MAX_DELAY_MS)
+                      : 0
+                  );
+                }}
+                className="max-w-[12rem]"
+                aria-describedby="delay-ms-help"
+              />
+              <p id="delay-ms-help" className="text-sm text-muted-foreground">
+                Waits this long between every request, including across iterations. Useful for
+                staying under a rate limit. 0 sends as fast as possible; maximum{' '}
+                {MAX_DELAY_MS / 1000}s.
+              </p>
+            </div>
+
             {/* Variable Mapping */}
             <div className="space-y-3">
               <Label>Map Collection Variables to CSV Columns</Label>
@@ -373,11 +420,29 @@ export function NewRunWizard({ onRunStarted }: NewRunWizardProps) {
               </div>
             </div>
 
-            <div>
-              <Label className="text-muted-foreground">Total Requests</Label>
-              <p className="font-medium text-lg">
-                {selectedCollection.requestCount * selectedCsv.rowCount} requests
-              </p>
+            <div className="grid gap-4 md:grid-cols-2">
+              <div>
+                <Label className="text-muted-foreground">Total Requests</Label>
+                <p className="font-medium text-lg">
+                  {selectedCollection.requestCount * selectedCsv.rowCount} requests
+                </p>
+              </div>
+              <div>
+                <Label className="text-muted-foreground">Delay between requests</Label>
+                <p className="font-medium text-lg">
+                  {delayMs === 0 ? 'None' : `${delayMs} ms`}
+                </p>
+                {delayMs > 0 && (
+                  <p className="text-sm text-muted-foreground">
+                    Adds roughly{' '}
+                    {formatDuration(
+                      Math.max(selectedCollection.requestCount * selectedCsv.rowCount - 1, 0) *
+                        delayMs
+                    )}{' '}
+                    of waiting
+                  </p>
+                )}
+              </div>
             </div>
 
             {Object.keys(variableMapping).length > 0 && (
