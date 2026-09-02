@@ -1,0 +1,3 @@
+# The self-hosted Fastify app is not part of the Vercel deployment.
+backend/
+docker-compose.yml

@@ -2,57 +2,55 @@
 
 Upload a Postman Collection (v2.1 JSON) and a CSV of data, and the app runs every request in the collection once per CSV row, substituting `{{variables}}` from that row, then reports pass/fail with full request/response detail.
 
-There are two deployment shapes in this repo:
+The Next.js app lives at the repository root so Vercel detects it with no configuration. `backend/` and `docker-compose.yml` are an optional self-hosted variant and are excluded from Vercel deployments via `.vercelignore`.
 
-| | Path | Stack | Use when |
+| | Location | Stack | Use when |
 |---|---|---|---|
-| **Vercel (recommended)** | `frontend/` | Single Next.js app, Postgres only | You want a hosted URL with no servers to run |
-| **Self-hosted** | `frontend/` + `backend/` | Next.js + Fastify + Redis + MinIO | You need long-running workers, private-network targets, or no row limits |
-
-The Vercel version is a complete, standalone app: the Next.js project contains its own API routes, database schema, and execution engine. `backend/` and `docker-compose.yml` are only needed for the self-hosted setup.
+| **Vercel (default)** | repo root | Next.js + Postgres | You want a hosted URL with no servers to run |
+| **Self-hosted** | `backend/` | Fastify + BullMQ + Redis + MinIO | You need private-network targets, uploads over 4MB, or runs without a browser open |
 
 ---
 
 ## Deploying to Vercel
 
-### Why the architecture changed
+### Why the architecture differs from the self-hosted variant
 
-Vercel runs serverless functions, not long-lived processes. The self-hosted design does not translate directly, so the Vercel app makes these substitutions:
+Vercel runs serverless functions, not long-lived processes, so four pieces of a conventional design don't translate:
 
-| Self-hosted | Vercel | Reason |
+| Conventional | Here | Reason |
 |---|---|---|
-| Fastify server on port 4000 | Next.js API routes (`src/app/api/**`) | One deployable, no separate server process |
-| BullMQ worker + Redis | Chunked executor (`POST /api/runs/[id]/execute`) | No background process can outlive a request |
-| Server-Sent Events | Polling (1.5s while active) | Serverless functions can't hold open streams |
-| MinIO / S3 | File contents stored in Postgres | Removes a whole service; files are small |
+| Fastify server on a port | Next.js API routes (`src/app/api/**`) | One deployable, no separate process |
+| BullMQ worker + Redis | Chunked executor (`POST /api/runs/[id]/execute`) | Nothing can outlive a request |
+| Server-Sent Events | Polling (1.5s while a run is active) | Functions can't hold open streams |
+| MinIO / S3 | File contents in Postgres | Removes a service; files are small |
 
-**How a run executes.** A function invocation can't run for the length of a whole test run, so a run advances in chunks. Each call to `POST /api/runs/:id/execute` takes a lease on the run, issues requests for ~30 seconds, saves everything it did, and reports whether work remains. The browser keeps calling until the run reports `done`. Because every completed request is written to the database as it happens, the next chunk resumes exactly where the last one stopped.
+**How a run executes.** A single function invocation can't span a whole test run, so a run advances in chunks. Each call to `POST /api/runs/:id/execute` takes a database lease on the run, issues requests for ~30 seconds, saves everything it did, and reports whether work remains. The browser keeps calling until the run reports `done`. Every completed request is written as it happens, so the next chunk resumes exactly where the last one stopped.
 
-**The practical consequence:** keep the Run History tab open while a run executes. If you close it, the run pauses and resumes the next time you open the app. See [Unattended runs](#unattended-runs-optional) to remove that requirement.
+**The practical consequence:** keep the Run History tab open while a run executes. Closing it pauses the run; it resumes next time you open the app. See [Unattended runs](#unattended-runs-optional) to remove that requirement.
 
 ### Step 1 — Create a Postgres database
 
-Any Postgres works. [Neon](https://neon.tech) has a usable free tier and works well with serverless.
+Any Postgres works. [Neon](https://neon.tech) has a usable free tier and suits serverless well.
 
-From the Neon dashboard, copy **both** connection strings:
+Copy **both** connection strings from the dashboard:
 
-- **Pooled** — the host contains `-pooler`. This goes into Vercel.
-- **Direct** — no `-pooler`. Use this for the one-time schema push.
+- **Pooled** — host contains `-pooler`. This goes into Vercel.
+- **Direct** — no `-pooler`. Use this for the schema push.
 
 On Supabase the equivalents are the "Connection pooling" URI (port 6543, add `?pgbouncer=true`) and the direct URI (port 5432).
 
-Serverless functions open many short-lived connections, so the pooled string matters — a direct connection will exhaust the connection limit under load.
+The distinction matters: serverless functions open many short-lived connections, and a direct connection will exhaust the connection limit under load.
 
 ### Step 2 — Push the schema
 
-Run once from your machine, using the **direct** URL:
+Run once from your machine, using the **direct** URL.
 
 ```bash
-cd custom-runner/frontend
+cd custom-runner
 npm install
 ```
 
-Create `frontend/.env`:
+Create `.env` at the repo root:
 
 ```env
 DATABASE_URL="postgresql://user:pass@ep-xxx.region.aws.neon.tech/dbname?sslmode=require"
@@ -66,12 +64,11 @@ npm run db:push
 
 This creates the `collections`, `csv_files`, `environments`, `runs`, `iterations`, and `request_results` tables.
 
+Note: strip `channel_binding=require` if your provider includes it — Prisma's driver doesn't recognize that parameter.
+
 ### Step 3 — Push the code to Git
 
-Vercel deploys from a Git repository. If `custom-runner` isn't already its own repo:
-
 ```bash
-cd custom-runner
 git init
 git add .
 git commit -m "API Test Runner"
@@ -80,36 +77,33 @@ git remote add origin https://github.com/<you>/<repo>.git
 git push -u origin main
 ```
 
-`frontend/.gitignore` already excludes `.env`, so your connection string stays local.
+`.gitignore` excludes `.env`, so your connection string stays local.
 
 ### Step 4 — Import the project into Vercel
 
 1. Go to [vercel.com/new](https://vercel.com/new) and select the repository.
-2. Set **Root Directory** to `frontend`.
-   This is the one setting that's easy to miss. If the repo root is the `custom-runner` folder, the value is `frontend`. If you pushed a parent folder, use the full path, e.g. `custom-runner/frontend`.
-3. Framework Preset should auto-detect as **Next.js**. Leave build settings alone — `npm run build` already runs `prisma generate`.
-4. Under **Environment Variables**, add:
+2. Leave **Root Directory** empty. The app is at the repo root, so Vercel detects Next.js automatically.
+3. Under **Environment Variables**, add:
 
    | Name | Value |
    |---|---|
-   | `DATABASE_URL` | Your **pooled** connection string |
+   | `DATABASE_URL` | your **pooled** connection string |
 
-5. Click **Deploy**.
+4. Deploy. Build settings need no changes — `npm run build` already runs `prisma generate`.
 
 ### Step 5 — Verify
 
-Open the deployment URL and check `/api/collections` returns `[]`. An empty array means the database connection works. A 500 means `DATABASE_URL` is wrong or the schema wasn't pushed.
+Open the deployment URL. You should get the tabbed UI. Then check `/api/collections` returns `[]`, which confirms the database connection.
 
 Then run a real test: upload a collection and CSV under **Files**, start a run from **New Run**, and watch **Run History**.
 
-### Local development against the same setup
+### Local development
 
 ```bash
-cd custom-runner/frontend
 npm run dev
 ```
 
-Opens on http://localhost:3000 with the API routes served from the same process. No Docker, Redis, or MinIO needed.
+Opens http://localhost:3000 with the API routes served from the same process. No Docker, Redis, or MinIO needed.
 
 ---
 
@@ -117,13 +111,13 @@ Opens on http://localhost:3000 with the API routes served from the same process.
 
 These are platform limits, not app bugs. Each has a workaround.
 
-**Function duration — 60s on Hobby.** A chunk issues requests for 30s then hands control back, so total run length is unbounded. Only a *single* request taking longer than `REQUEST_TIMEOUT_MS` (20s default) is a problem; it's recorded as a timeout failure.
+**Function duration — 60s on Hobby.** A chunk issues requests for 30s then hands control back, so total run length is unbounded. Only a *single* request exceeding `REQUEST_TIMEOUT_MS` (20s default) is a problem, and that's recorded as a timeout failure.
 
-On Pro you can go faster by raising both limits together — `maxDuration` in `src/app/api/runs/[id]/execute/route.ts` and the `EXEC_TIME_BUDGET_MS` environment variable — which means fewer round trips per run.
+On Pro you can raise both limits together — `maxDuration` in `src/app/api/runs/[id]/execute/route.ts` and the `EXEC_TIME_BUDGET_MS` environment variable — for fewer round trips per run.
 
-**Upload size — 4.5MB request body.** The upload routes reject files above 4MB with a clear message rather than letting the platform return an opaque 413. Larger collections need the self-hosted setup or a direct-to-blob upload.
+**Upload size — 4.5MB request body.** The upload routes reject files above 4MB with a clear message rather than letting the platform return an opaque 413. Larger collections need the self-hosted setup.
 
-**No private network access.** Functions run on public infrastructure, so they can't reach `localhost` or your VPC. The SSRF guard in `src/server/http-client.ts` blocks those targets deliberately. Testing internal APIs requires the self-hosted deployment.
+**No private network access.** Functions run on public infrastructure and can't reach `localhost` or your VPC. The SSRF guard in `src/server/http-client.ts` blocks those targets deliberately. Testing internal APIs requires the self-hosted deployment.
 
 **Runs pause when the tab closes.** Covered next.
 
@@ -131,10 +125,10 @@ On Pro you can go faster by raising both limits together — `maxDuration` in `s
 
 ### Unattended runs (optional)
 
-`GET /api/cron/resume` picks up any run that has no active lease and advances it one chunk. To have runs continue without a browser open:
+`GET /api/cron/resume` picks up any run with no active lease and advances it one chunk. To have runs continue without a browser open:
 
-1. Add `CRON_SECRET` to your Vercel environment variables (any long random string). The endpoint returns 503 while unset, so it is never an unauthenticated trigger.
-2. Create `frontend/vercel.json`:
+1. Add `CRON_SECRET` to your Vercel environment variables (any long random string). The endpoint returns 503 while unset, so it's never an unauthenticated trigger.
+2. Create `vercel.json` at the repo root:
 
    ```json
    {
@@ -142,13 +136,13 @@ On Pro you can go faster by raising both limits together — `maxDuration` in `s
    }
    ```
 
-Sub-daily cron schedules require a Vercel Pro plan. On Hobby the minimum granularity is once per day, which isn't frequent enough to drive a run — keep the tab open instead.
+Sub-daily cron schedules require a Vercel Pro plan. On Hobby the minimum is once per day, which isn't frequent enough to drive a run — keep the tab open instead.
 
 ---
 
 ## Configuration reference
 
-Only `DATABASE_URL` is required. The rest tune the executor.
+Only `DATABASE_URL` is required. The rest tune the executor. See `.env.example`.
 
 | Variable | Default | Purpose |
 |---|---|---|
@@ -158,8 +152,6 @@ Only `DATABASE_URL` is required. The rest tune the executor.
 | `REQUEST_TIMEOUT_MS` | `20000` | Per-request timeout. Keep below `EXEC_TIME_BUDGET_MS` |
 | `MAX_STORED_BODY_BYTES` | `200000` | Response body truncation threshold |
 | `CRON_SECRET` | unset | Enables `/api/cron/resume`. Disabled while unset |
-
-See `frontend/.env.example`.
 
 ---
 
@@ -175,7 +167,7 @@ See `frontend/.env.example`.
 
 ### 3. Start a run
 
-**New Run** tab, three steps: pick the collection and CSV, map CSV columns to collection variables (columns matching a variable name are mapped automatically), then confirm.
+**New Run** tab, three steps: pick the collection and CSV, map CSV columns to collection variables (columns matching a variable name map automatically), then confirm.
 
 ### 4. Watch and export
 
@@ -195,7 +187,7 @@ See `frontend/.env.example`.
 | Form / urlencoded fields | `username={{user}}` |
 | Request name | `Create user {{userName}}` |
 
-Unknown variables are left as literal `{{name}}` text rather than replaced with an empty string, so a missing mapping is visible in the results instead of silently producing a malformed request.
+Unknown variables are left as literal `{{name}}` text rather than replaced with an empty string, so a missing mapping shows up in the results instead of silently producing a malformed request.
 
 Precedence: **CSV row value** > **environment value**.
 
@@ -211,7 +203,7 @@ Not supported: `pm.sendRequest`, pre-request scripts (parsed but not executed), 
 
 ### CSV format
 
-Header row required. Comma, semicolon, and tab delimiters are auto-detected. RFC 4180 quoting is handled, so embedded commas and newlines are fine. UTF-8 BOM is stripped.
+Header row required. Comma, semicolon, and tab delimiters are auto-detected. RFC 4180 quoting is handled, so embedded commas and newlines are fine. A UTF-8 BOM is stripped.
 
 ```csv
 userId,email,name
@@ -268,40 +260,41 @@ Concurrency is safe: the database lease means extra callers get `busy` rather th
 ## Project structure
 
 ```
-custom-runner/
-├── frontend/                      # The Vercel app (full-stack Next.js)
-│   ├── prisma/schema.prisma       # Postgres schema (file contents + lease column)
-│   ├── src/
-│   │   ├── app/
-│   │   │   ├── api/               # All API routes
-│   │   │   │   ├── collections/
-│   │   │   │   ├── csv/
-│   │   │   │   ├── environments/
-│   │   │   │   ├── runs/          # includes [id]/execute
-│   │   │   │   └── cron/resume/
-│   │   │   └── page.tsx           # Tabbed UI
-│   │   ├── components/
-│   │   │   ├── files-manager.tsx
-│   │   │   ├── environments-manager.tsx
-│   │   │   ├── new-run-wizard.tsx
-│   │   │   ├── run-history.tsx
-│   │   │   └── run-detail-dialog.tsx
-│   │   ├── lib/
-│   │   │   ├── api.ts             # Typed client
-│   │   │   └── use-run-driver.ts  # Drives /execute until done
-│   │   └── server/                # Server-only code
-│   │       ├── executor.ts        # Chunked, resumable engine
-│   │       ├── collection-parser.ts
-│   │       ├── csv-parser.ts
-│   │       ├── http-client.ts     # fetch + SSRF guard + timeout
-│   │       ├── script-sandbox.ts  # pm.* subset in node:vm
-│   │       └── prisma.ts
-│   └── .env.example
+custom-runner/                     # Next.js app at root -> Vercel auto-detects
+├── prisma/schema.prisma           # Postgres schema (file contents + lease column)
+├── src/
+│   ├── app/
+│   │   ├── api/                   # All API routes
+│   │   │   ├── collections/
+│   │   │   ├── csv/
+│   │   │   ├── environments/
+│   │   │   ├── runs/              # includes [id]/execute
+│   │   │   └── cron/resume/
+│   │   └── page.tsx               # Tabbed UI
+│   ├── components/
+│   │   ├── files-manager.tsx
+│   │   ├── environments-manager.tsx
+│   │   ├── new-run-wizard.tsx
+│   │   ├── run-history.tsx
+│   │   └── run-detail-dialog.tsx
+│   ├── lib/
+│   │   ├── api.ts                 # Typed client
+│   │   └── use-run-driver.ts      # Drives /execute until done
+│   └── server/                    # Server-only code
+│       ├── executor.ts            # Chunked, resumable engine
+│       ├── collection-parser.ts
+│       ├── csv-parser.ts
+│       ├── http-client.ts         # fetch + SSRF guard + timeout
+│       ├── script-sandbox.ts      # pm.* subset in node:vm
+│       └── prisma.ts
+├── .env.example
+├── .vercelignore                  # keeps backend/ out of deployments
 │
 ├── backend/                       # Self-hosted only (Fastify + BullMQ worker)
-├── docker-compose.yml             # Self-hosted only (Postgres + Redis + MinIO)
-└── README.md
+└── docker-compose.yml             # Self-hosted only (Postgres + Redis + MinIO)
 ```
+
+`backend/` is excluded from this project's TypeScript compilation (`tsconfig.json`) and from ESLint, since it has its own dependencies and config.
 
 ---
 
@@ -312,7 +305,6 @@ Choose this when you need to reach private networks, upload files over 4MB, or r
 Requires Docker. On Windows, Docker Desktop provides `docker compose` (no hyphen); the standalone `docker-compose` binary is legacy.
 
 ```bash
-cd custom-runner
 docker compose up -d          # Postgres, Redis, MinIO
 
 cd backend
@@ -325,7 +317,7 @@ npm run dev                   # API on :4000
 npm run dev:worker            # BullMQ worker
 ```
 
-The `backend/` app has its own Prisma schema that stores files in MinIO rather than Postgres, and its own SSE endpoint. Point a frontend at it by restoring the API proxy rewrite in `frontend/next.config.js`:
+The `backend/` app has its own Prisma schema that stores files in MinIO rather than Postgres, plus an SSE endpoint. To point the UI at it, add an API proxy rewrite to `next.config.js`:
 
 ```js
 async rewrites() {
@@ -333,15 +325,17 @@ async rewrites() {
 }
 ```
 
-Note that the two schemas differ, so a single database can't serve both deployments.
+The two schemas differ, so one database can't serve both deployments.
 
 ---
 
 ## Troubleshooting
 
-**`/api/collections` returns 500 on Vercel.** Either `DATABASE_URL` is missing or wrong, or the schema was never pushed. Check the function logs in the Vercel dashboard for the Prisma error, and confirm `npm run db:push` completed against the same database.
+**Vercel serves a plain `404: NOT_FOUND` page on every path.** That's Vercel's edge 404, not the app's — nothing was deployed as a Next.js app. Check that **Root Directory** in project settings is *empty*. If it's set to a subfolder that has no `package.json`, Vercel finds no framework and deploys nothing. A Next.js 404 would instead render inside your app's layout.
 
-**Build fails with `@prisma/client did not initialize yet`.** `prisma generate` didn't run. The `build` script and a `postinstall` hook both invoke it, so this usually means the Root Directory is pointing somewhere without `prisma/schema.prisma`.
+**`/api/collections` returns 500.** Either `DATABASE_URL` is missing or wrong, or the schema was never pushed. Check the function logs in the Vercel dashboard for the Prisma error, and confirm `npm run db:push` completed against the same database.
+
+**Build fails with `@prisma/client did not initialize yet`.** `prisma generate` didn't run. Both the `build` script and a `postinstall` hook invoke it, so this usually means `prisma/schema.prisma` isn't where the build expects it.
 
 **"Too many connections."** You're using the direct connection string in production. Switch `DATABASE_URL` to the pooled one.
 

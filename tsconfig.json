@@ -23,5 +23,7 @@
     }
   },
   "include": ["next-env.d.ts", "**/*.ts", "**/*.tsx", ".next/types/**/*.ts"],
-  "exclude": ["node_modules"]
+  // `backend/` is the separate self-hosted Fastify app with its own tsconfig
+  // and dependencies. It must stay out of this project's compilation.
+  "exclude": ["node_modules", "backend"]
 }
