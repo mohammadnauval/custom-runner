@@ -89,7 +89,9 @@ git push -u origin main
    |---|---|
    | `DATABASE_URL` | your **pooled** connection string |
 
-4. Deploy. Build settings need no changes — `npm run build` already runs `prisma generate`.
+4. Deploy.
+
+`vercel.json` pins `framework: "nextjs"` and the build command, so the deployment doesn't depend on dashboard build settings being correct. If a project was first imported before the app moved to the root, its saved Framework Preset may still say "Other" — see troubleshooting below.
 
 ### Step 5 — Verify
 
@@ -128,10 +130,12 @@ On Pro you can raise both limits together — `maxDuration` in `src/app/api/runs
 `GET /api/cron/resume` picks up any run with no active lease and advances it one chunk. To have runs continue without a browser open:
 
 1. Add `CRON_SECRET` to your Vercel environment variables (any long random string). The endpoint returns 503 while unset, so it's never an unauthenticated trigger.
-2. Create `vercel.json` at the repo root:
+2. Add a `crons` key to the existing `vercel.json`:
 
    ```json
    {
+     "framework": "nextjs",
+     "buildCommand": "prisma generate && next build",
      "crons": [{ "path": "/api/cron/resume", "schedule": "* * * * *" }]
    }
    ```
@@ -330,6 +334,8 @@ The two schemas differ, so one database can't serve both deployments.
 ---
 
 ## Troubleshooting
+
+**Build fails: `No Output Directory named "public" found after the Build completed`.** The project's Framework Preset is "Other", so Vercel treats the repo as a static site and looks for `public/`. This happens to projects imported before a `package.json` existed at the root — the preset is saved once and doesn't re-detect. `vercel.json` sets `framework: "nextjs"`, which fixes new deployments; if it persists, set **Settings → Build and Deployment → Framework Preset** to **Next.js** and clear any **Output Directory** override.
 
 **Vercel serves a plain `404: NOT_FOUND` page on every path.** That's Vercel's edge 404, not the app's — nothing was deployed as a Next.js app. Check that **Root Directory** in project settings is *empty*. If it's set to a subfolder that has no `package.json`, Vercel finds no framework and deploys nothing. A Next.js 404 would instead render inside your app's layout.
 
