@@ -297,10 +297,20 @@ export function NewRunWizard({ onRunStarted }: NewRunWizardProps) {
                 <p className="text-sm text-muted-foreground">No variables found in collection</p>
               ) : (
                 <div className="grid gap-3">
+                  <div className="flex items-center gap-3 text-xs uppercase tracking-wide text-muted-foreground">
+                    <span className="flex-1">Collection variable</span>
+                    <span className="w-4" aria-hidden="true" />
+                    <span className="flex-1">CSV column</span>
+                  </div>
                   {selectedCollection.variableNames.map((varName) => (
                     <div key={varName} className="flex items-center gap-3">
-                      <code className="flex-1 px-2 py-1 bg-muted rounded text-sm">{`{{${varName}}}`}</code>
-                      <span className="text-muted-foreground">→</span>
+                      <code
+                        title={`{{${varName}}}`}
+                        className="min-w-0 flex-1 truncate rounded bg-muted px-2 py-1 text-sm"
+                      >{`{{${varName}}}`}</code>
+                      <span className="w-4 shrink-0 text-center text-muted-foreground" aria-hidden="true">
+                        →
+                      </span>
                       <Select
                         value={
                           Object.entries(variableMapping).find(([, v]) => v === varName)?.[0] ??
@@ -322,7 +332,7 @@ export function NewRunWizard({ onRunStarted }: NewRunWizardProps) {
                           });
                         }}
                       >
-                        <SelectTrigger className="flex-1">
+                        <SelectTrigger className="min-w-0 flex-1" aria-label={`CSV column for ${varName}`}>
                           <SelectValue placeholder="Select CSV column..." />
                         </SelectTrigger>
                         <SelectContent>
