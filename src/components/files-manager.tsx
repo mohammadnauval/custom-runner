@@ -1,16 +1,20 @@
 'use client';
 
+import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
-import { collectionsApi, csvApi, type Collection, type CsvFile } from '@/lib/api';
+import { Alert } from '@/components/ui/alert';
+import { collectionsApi, csvApi, formatApiError } from '@/lib/api';
 import { Trash2, FileJson, FileSpreadsheet, Loader2 } from 'lucide-react';
 import { FileDropzone } from './file-dropzone';
-import { useState } from 'react';
+
+type Status = { variant: 'error' | 'success'; message: string } | null;
 
 export function FilesManager() {
   const queryClient = useQueryClient();
-  const [isUploading, setIsUploading] = useState(false);
+  const [collectionStatus, setCollectionStatus] = useState<Status>(null);
+  const [csvStatus, setCsvStatus] = useState<Status>(null);
 
   // Collections
   const { data: collections = [], isLoading: collectionsLoading } = useQuery({
@@ -20,15 +24,30 @@ export function FilesManager() {
 
   const uploadCollectionMutation = useMutation({
     mutationFn: collectionsApi.upload,
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['collections'] }),
+    onSuccess: (collection) => {
+      void queryClient.invalidateQueries({ queryKey: ['collections'] });
+      setCollectionStatus({
+        variant: 'success',
+        message: `Uploaded "${collection.name}" — ${collection.requestCount} requests, ${collection.variableNames.length} variables detected.`,
+      });
+    },
+    onError: (error) => {
+      setCollectionStatus({ variant: 'error', message: formatApiError(error) });
+    },
   });
 
   const deleteCollectionMutation = useMutation({
     mutationFn: collectionsApi.delete,
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['collections'] }),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['collections'] });
+      setCollectionStatus(null);
+    },
+    onError: (error) => {
+      setCollectionStatus({ variant: 'error', message: formatApiError(error) });
+    },
   });
 
-  // CSV Files
+  // CSV files
   const { data: csvFiles = [], isLoading: csvLoading } = useQuery({
     queryKey: ['csvFiles'],
     queryFn: csvApi.list,
@@ -36,35 +55,28 @@ export function FilesManager() {
 
   const uploadCsvMutation = useMutation({
     mutationFn: csvApi.upload,
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['csvFiles'] }),
+    onSuccess: (csv) => {
+      void queryClient.invalidateQueries({ queryKey: ['csvFiles'] });
+      setCsvStatus({
+        variant: 'success',
+        message: `Uploaded "${csv.name}" — ${csv.rowCount} rows, columns: ${csv.columnNames.join(', ')}.`,
+      });
+    },
+    onError: (error) => {
+      setCsvStatus({ variant: 'error', message: formatApiError(error) });
+    },
   });
 
   const deleteCsvMutation = useMutation({
     mutationFn: csvApi.delete,
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['csvFiles'] }),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['csvFiles'] });
+      setCsvStatus(null);
+    },
+    onError: (error) => {
+      setCsvStatus({ variant: 'error', message: formatApiError(error) });
+    },
   });
-
-  const handleCollectionUpload = async (files: File[]) => {
-    if (files.length > 0) {
-      setIsUploading(true);
-      try {
-        await uploadCollectionMutation.mutateAsync(files[0]);
-      } finally {
-        setIsUploading(false);
-      }
-    }
-  };
-
-  const handleCsvUpload = async (files: File[]) => {
-    if (files.length > 0) {
-      setIsUploading(true);
-      try {
-        await uploadCsvMutation.mutateAsync(files[0]);
-      } finally {
-        setIsUploading(false);
-      }
-    }
-  };
 
   return (
     <div className="grid gap-6 md:grid-cols-2">
@@ -80,10 +92,22 @@ export function FilesManager() {
         <CardContent className="space-y-4">
           <FileDropzone
             accept={{ 'application/json': ['.json'] }}
-            onDrop={handleCollectionUpload}
+            onDrop={(files) => {
+              setCollectionStatus(null);
+              uploadCollectionMutation.mutate(files[0]);
+            }}
+            onReject={(message) => setCollectionStatus({ variant: 'error', message })}
             description="Postman Collection v2.1 JSON"
-            disabled={isUploading}
+            busy={uploadCollectionMutation.isPending}
           />
+
+          {collectionStatus && (
+            <Alert
+              variant={collectionStatus.variant}
+              message={collectionStatus.message}
+              onDismiss={() => setCollectionStatus(null)}
+            />
+          )}
 
           {collectionsLoading ? (
             <div className="flex items-center justify-center py-4">
@@ -94,7 +118,10 @@ export function FilesManager() {
           ) : (
             <div className="space-y-2">
               {collections.map((collection) => (
-                <div key={collection.id} className="flex items-center justify-between p-3 border rounded-lg">
+                <div
+                  key={collection.id}
+                  className="flex items-center justify-between p-3 border rounded-lg"
+                >
                   <div>
                     <p className="font-medium">{collection.name}</p>
                     <p className="text-sm text-muted-foreground">
@@ -104,6 +131,7 @@ export function FilesManager() {
                   <Button
                     variant="ghost"
                     size="icon"
+                    aria-label={`Delete ${collection.name}`}
                     onClick={() => deleteCollectionMutation.mutate(collection.id)}
                     disabled={deleteCollectionMutation.isPending}
                   >
@@ -116,7 +144,7 @@ export function FilesManager() {
         </CardContent>
       </Card>
 
-      {/* CSV Files */}
+      {/* CSV files */}
       <Card>
         <CardHeader>
           <CardTitle className="flex items-center gap-2">
@@ -128,10 +156,22 @@ export function FilesManager() {
         <CardContent className="space-y-4">
           <FileDropzone
             accept={{ 'text/csv': ['.csv'] }}
-            onDrop={handleCsvUpload}
+            onDrop={(files) => {
+              setCsvStatus(null);
+              uploadCsvMutation.mutate(files[0]);
+            }}
+            onReject={(message) => setCsvStatus({ variant: 'error', message })}
             description="CSV with header row"
-            disabled={isUploading}
+            busy={uploadCsvMutation.isPending}
           />
+
+          {csvStatus && (
+            <Alert
+              variant={csvStatus.variant}
+              message={csvStatus.message}
+              onDismiss={() => setCsvStatus(null)}
+            />
+          )}
 
           {csvLoading ? (
             <div className="flex items-center justify-center py-4">
@@ -152,6 +192,7 @@ export function FilesManager() {
                   <Button
                     variant="ghost"
                     size="icon"
+                    aria-label={`Delete ${csv.name}`}
                     onClick={() => deleteCsvMutation.mutate(csv.id)}
                     disabled={deleteCsvMutation.isPending}
                   >

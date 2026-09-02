@@ -6,11 +6,13 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { environmentsApi, type Environment } from '@/lib/api';
+import { Alert } from '@/components/ui/alert';
+import { environmentsApi, formatApiError, type Environment } from '@/lib/api';
 import { Plus, Trash2, Edit, Save, X, Loader2, Settings } from 'lucide-react';
 
 export function EnvironmentsManager() {
   const queryClient = useQueryClient();
+  const [error, setError] = useState<string | null>(null);
   const [isCreating, setIsCreating] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [newName, setNewName] = useState('');
@@ -24,25 +26,33 @@ export function EnvironmentsManager() {
   const createMutation = useMutation({
     mutationFn: environmentsApi.create,
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['environments'] });
+      void queryClient.invalidateQueries({ queryKey: ['environments'] });
       setIsCreating(false);
       setNewName('');
       setNewVariables([{ key: '', value: '' }]);
+      setError(null);
     },
+    onError: (err) => setError(formatApiError(err)),
   });
 
   const updateMutation = useMutation({
     mutationFn: ({ id, data }: { id: string; data: { name?: string; variables?: Record<string, string> } }) =>
       environmentsApi.update(id, data),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['environments'] });
+      void queryClient.invalidateQueries({ queryKey: ['environments'] });
       setEditingId(null);
+      setError(null);
     },
+    onError: (err) => setError(formatApiError(err)),
   });
 
   const deleteMutation = useMutation({
     mutationFn: environmentsApi.delete,
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['environments'] }),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['environments'] });
+      setError(null);
+    },
+    onError: (err) => setError(formatApiError(err)),
   });
 
   const handleCreate = () => {
@@ -92,6 +102,8 @@ export function EnvironmentsManager() {
           )}
         </CardHeader>
         <CardContent className="space-y-4">
+          {error && <Alert message={error} onDismiss={() => setError(null)} />}
+
           {/* Create New Environment Form */}
           {isCreating && (
             <div className="border rounded-lg p-4 space-y-4 bg-muted/50">

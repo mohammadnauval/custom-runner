@@ -7,14 +7,22 @@ import { Button } from '@/components/ui/button';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Label } from '@/components/ui/label';
 import { FileDropzone } from '@/components/file-dropzone';
-import { collectionsApi, csvApi, environmentsApi, runsApi, type Collection, type CsvFile, type Environment } from '@/lib/api';
-import { ChevronLeft, ChevronRight, Play, Upload, FileJson, FileSpreadsheet } from 'lucide-react';
+import { Alert } from '@/components/ui/alert';
+import { collectionsApi, csvApi, environmentsApi, runsApi, formatApiError } from '@/lib/api';
+import { ChevronLeft, ChevronRight, Play, FileJson, FileSpreadsheet } from 'lucide-react';
 
 interface NewRunWizardProps {
   onRunStarted?: () => void;
 }
 
 type Step = 'select-files' | 'map-variables' | 'confirm';
+
+/**
+ * Radix Select reserves the empty string for "no selection", and throws if an
+ * item uses it as a value. Use a sentinel for the explicit "none" choices.
+ * See https://github.com/radix-ui/primitives/issues/3390
+ */
+const NONE_VALUE = '__none__';
 
 export function NewRunWizard({ onRunStarted }: NewRunWizardProps) {
   const queryClient = useQueryClient();
@@ -23,7 +31,9 @@ export function NewRunWizard({ onRunStarted }: NewRunWizardProps) {
   const [selectedCsvId, setSelectedCsvId] = useState<string>('');
   const [selectedEnvId, setSelectedEnvId] = useState<string>('');
   const [variableMapping, setVariableMapping] = useState<Record<string, string>>({});
-  const [isUploading, setIsUploading] = useState(false);
+  const [collectionError, setCollectionError] = useState<string | null>(null);
+  const [csvError, setCsvError] = useState<string | null>(null);
+  const [runError, setRunError] = useState<string | null>(null);
 
   // Fetch data
   const { data: collections = [] } = useQuery({
@@ -49,51 +59,46 @@ export function NewRunWizard({ onRunStarted }: NewRunWizardProps) {
   const uploadCollectionMutation = useMutation({
     mutationFn: collectionsApi.upload,
     onSuccess: (data) => {
-      queryClient.invalidateQueries({ queryKey: ['collections'] });
+      void queryClient.invalidateQueries({ queryKey: ['collections'] });
       setSelectedCollectionId(data.id);
+      setCollectionError(null);
     },
+    onError: (error) => setCollectionError(formatApiError(error)),
   });
 
   const uploadCsvMutation = useMutation({
     mutationFn: csvApi.upload,
     onSuccess: (data) => {
-      queryClient.invalidateQueries({ queryKey: ['csvFiles'] });
+      void queryClient.invalidateQueries({ queryKey: ['csvFiles'] });
       setSelectedCsvId(data.id);
+      setCsvError(null);
     },
+    onError: (error) => setCsvError(formatApiError(error)),
   });
 
   const createRunMutation = useMutation({
     mutationFn: runsApi.create,
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['runs'] });
+      void queryClient.invalidateQueries({ queryKey: ['runs'] });
+      setRunError(null);
       onRunStarted?.();
     },
+    onError: (error) => setRunError(formatApiError(error)),
   });
 
   // Handlers
-  const handleCollectionUpload = async (files: File[]) => {
-    if (files.length > 0) {
-      setIsUploading(true);
-      try {
-        await uploadCollectionMutation.mutateAsync(files[0]);
-      } finally {
-        setIsUploading(false);
-      }
-    }
+  const handleCollectionUpload = (files: File[]) => {
+    setCollectionError(null);
+    uploadCollectionMutation.mutate(files[0]);
   };
 
-  const handleCsvUpload = async (files: File[]) => {
-    if (files.length > 0) {
-      setIsUploading(true);
-      try {
-        await uploadCsvMutation.mutateAsync(files[0]);
-      } finally {
-        setIsUploading(false);
-      }
-    }
+  const handleCsvUpload = (files: File[]) => {
+    setCsvError(null);
+    uploadCsvMutation.mutate(files[0]);
   };
 
   const handleStartRun = () => {
+    setRunError(null);
     createRunMutation.mutate({
       collectionId: selectedCollectionId,
       csvFileId: selectedCsvId,
@@ -179,9 +184,14 @@ export function NewRunWizard({ onRunStarted }: NewRunWizardProps) {
               <FileDropzone
                 accept={{ 'application/json': ['.json'] }}
                 onDrop={handleCollectionUpload}
+                onReject={setCollectionError}
                 description="Postman Collection v2.1 JSON"
-                disabled={isUploading}
+                busy={uploadCollectionMutation.isPending}
               />
+
+              {collectionError && (
+                <Alert message={collectionError} onDismiss={() => setCollectionError(null)} />
+              )}
 
               {selectedCollection && (
                 <div className="p-3 bg-muted rounded-md text-sm">
@@ -232,9 +242,12 @@ export function NewRunWizard({ onRunStarted }: NewRunWizardProps) {
               <FileDropzone
                 accept={{ 'text/csv': ['.csv'] }}
                 onDrop={handleCsvUpload}
+                onReject={setCsvError}
                 description="CSV with header row"
-                disabled={isUploading}
+                busy={uploadCsvMutation.isPending}
               />
+
+              {csvError && <Alert message={csvError} onDismiss={() => setCsvError(null)} />}
 
               {selectedCsv && (
                 <div className="p-3 bg-muted rounded-md text-sm">
@@ -259,12 +272,15 @@ export function NewRunWizard({ onRunStarted }: NewRunWizardProps) {
             {/* Environment Selection */}
             <div className="space-y-2">
               <Label>Environment (optional)</Label>
-              <Select value={selectedEnvId} onValueChange={setSelectedEnvId}>
+              <Select
+                value={selectedEnvId || NONE_VALUE}
+                onValueChange={(value) => setSelectedEnvId(value === NONE_VALUE ? '' : value)}
+              >
                 <SelectTrigger>
                   <SelectValue placeholder="No environment" />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="">No environment</SelectItem>
+                  <SelectItem value={NONE_VALUE}>No environment</SelectItem>
                   {environments.map((e) => (
                     <SelectItem key={e.id} value={e.id}>
                       {e.name}
@@ -286,18 +302,20 @@ export function NewRunWizard({ onRunStarted }: NewRunWizardProps) {
                       <code className="flex-1 px-2 py-1 bg-muted rounded text-sm">{`{{${varName}}}`}</code>
                       <span className="text-muted-foreground">→</span>
                       <Select
-                        value={Object.entries(variableMapping).find(([, v]) => v === varName)?.[0] || ''}
+                        value={
+                          Object.entries(variableMapping).find(([, v]) => v === varName)?.[0] ??
+                          NONE_VALUE
+                        }
                         onValueChange={(value) => {
                           setVariableMapping((prev) => {
-                            // Remove previous mapping for this variable
+                            // Drop any existing column mapped to this variable
                             const newMapping = { ...prev };
                             for (const [k, v] of Object.entries(newMapping)) {
                               if (v === varName) {
                                 delete newMapping[k];
                               }
                             }
-                            // Add new mapping if a column is selected
-                            if (value) {
+                            if (value !== NONE_VALUE) {
                               newMapping[value] = varName;
                             }
                             return newMapping;
@@ -308,7 +326,7 @@ export function NewRunWizard({ onRunStarted }: NewRunWizardProps) {
                           <SelectValue placeholder="Select CSV column..." />
                         </SelectTrigger>
                         <SelectContent>
-                          <SelectItem value="">Not mapped</SelectItem>
+                          <SelectItem value={NONE_VALUE}>Not mapped</SelectItem>
                           {selectedCsv.columnNames.map((col) => (
                             <SelectItem key={col} value={col}>
                               {col}
@@ -367,6 +385,8 @@ export function NewRunWizard({ onRunStarted }: NewRunWizardProps) {
           </CardContent>
         </Card>
       )}
+
+      {runError && <Alert message={runError} onDismiss={() => setRunError(null)} />}
 
       {/* Navigation Buttons */}
       <div className="flex justify-between">
